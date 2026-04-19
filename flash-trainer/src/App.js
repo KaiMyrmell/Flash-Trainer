@@ -1,0 +1,607 @@
+import { useState, useEffect, useRef, useCallback } from "react";
+
+const ROLES = ["top", "jg", "mid", "ad", "sup"];
+const ROLE_COLORS = {
+  top: "#e74c3c",
+  jg: "#2ecc71",
+  mid: "#f1c40f",
+  ad: "#e67e22",
+  sup: "#3498db",
+};
+
+const FLASH_CD = 300;
+
+function formatTime(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  if (s === 0) return `${m}`;
+  return `${m}${s < 10 ? "0" : ""}${s}`;
+}
+
+function roundToTen(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  const roundedDown = Math.floor(s / 10) * 10;
+  const roundedUp = roundedDown + 10;
+  const accepted = [];
+  if (roundedUp >= 60) {
+    accepted.push((m + 1) * 60);
+  } else {
+    accepted.push(m * 60 + roundedUp);
+  }
+  accepted.push(m * 60 + roundedDown);
+  // deduplicate
+  return [...new Set(accepted)];
+}
+
+function parseFullInput(str) {
+  str = str.trim().toLowerCase();
+  let role = null;
+  for (const r of ROLES) {
+    if (str.endsWith(r)) {
+      role = r;
+      str = str.slice(0, -r.length).trim();
+      break;
+    }
+  }
+  if (!role) return null;
+
+  let timeSec = null;
+  if (str.includes(":")) {
+    const [mStr, sStr] = str.split(":");
+    const m = parseInt(mStr, 10);
+    const s = parseInt(sStr, 10);
+    if (!isNaN(m) && !isNaN(s)) timeSec = m * 60 + s;
+  } else if (str.length <= 2) {
+    const m = parseInt(str, 10);
+    if (!isNaN(m)) timeSec = m * 60;
+  } else if (str.length === 3) {
+    const m = parseInt(str[0], 10);
+    const s = parseInt(str.slice(1), 10);
+    if (!isNaN(m) && !isNaN(s)) timeSec = m * 60 + s;
+  } else if (str.length === 4) {
+    const m = parseInt(str.slice(0, 2), 10);
+    const s = parseInt(str.slice(2), 10);
+    if (!isNaN(m) && !isNaN(s)) timeSec = m * 60 + s;
+  }
+
+  if (timeSec === null) return null;
+  return { role, time: timeSec };
+}
+
+function generateRound(prevTime, roundIndex) {
+  const minStart = prevTime != null ? prevTime + 15 : 90;
+  const maxStart = Math.min(minStart + 240, 2400);
+  const flashTime = minStart + Math.floor(Math.random() * (maxStart - minStart));
+
+  const availableRoles = [...ROLES];
+  const numRoles = Math.min(1 + Math.floor(roundIndex / 3), 3);
+  const selectedRoles = [];
+  for (let i = 0; i < numRoles; i++) {
+    const idx = Math.floor(Math.random() * availableRoles.length);
+    selectedRoles.push(availableRoles.splice(idx, 1)[0]);
+  }
+
+  return selectedRoles.map((role) => {
+    const offset = Math.floor(Math.random() * 30) - 10;
+    const time = Math.max(90, Math.min(2700, flashTime + offset));
+    const raw = time + FLASH_CD;
+    const accepted = roundToTen(raw);
+    return { role, flashTime: time, rawAnswer: raw, acceptedAnswers: accepted };
+  });
+}
+
+function getSpeedTier(ms) {
+  if (ms <= 2000) return { label: "FAST", color: "#2ecc71", bg: "rgba(46,204,113,0.12)", border: "rgba(46,204,113,0.3)" };
+  if (ms <= 3000) return { label: "OK", color: "#f1c40f", bg: "rgba(241,196,15,0.12)", border: "rgba(241,196,15,0.3)" };
+  if (ms <= 6000) return { label: "SLOW", color: "#e67e22", bg: "rgba(230,126,34,0.12)", border: "rgba(230,126,34,0.3)" };
+  return { label: "TOO SLOW", color: "#e74c3c", bg: "rgba(231,76,60,0.12)", border: "rgba(231,76,60,0.3)" };
+}
+
+function SpeedBadge({ ms }) {
+  const tier = getSpeedTier(ms);
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 4,
+      padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 700,
+      background: tier.bg, color: tier.color, border: `1px solid ${tier.border}`,
+      letterSpacing: 0.5,
+    }}>
+      {(ms / 1000).toFixed(1)}s · {tier.label}
+    </span>
+  );
+}
+
+function ResultBadge({ entry }) {
+  const isCorrect = entry.correct;
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", justifyContent: "space-between",
+      gap: 8, padding: "6px 10px", borderRadius: 6, fontSize: 13,
+      fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+      background: isCorrect ? "rgba(46,204,113,0.08)" : "rgba(231,76,60,0.08)",
+      border: `1px solid ${isCorrect ? "rgba(46,204,113,0.2)" : "rgba(231,76,60,0.2)"}`,
+    }}>
+      <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{ color: isCorrect ? "#2ecc71" : "#e74c3c", fontWeight: 800 }}>
+          {isCorrect ? "✓" : "✗"}
+        </span>
+        <span style={{ color: ROLE_COLORS[entry.role], fontWeight: 700 }}>{entry.role}</span>
+        <span style={{ opacity: 0.4 }}>→</span>
+        <span style={{ color: "#fff" }}>{formatTime(entry.typed)}{entry.role}</span>
+        {!isCorrect && (
+          <span style={{ fontSize: 11, opacity: 0.5 }}>
+            (was {entry.acceptedAnswers.map(a => formatTime(a)).join(" or ")})
+          </span>
+        )}
+      </span>
+      <SpeedBadge ms={entry.responseTime} />
+    </div>
+  );
+}
+
+function LiveTimer({ startTime }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 50);
+    return () => clearInterval(id);
+  }, []);
+  const elapsed = now - startTime;
+  const tier = getSpeedTier(elapsed);
+  return (
+    <div style={{
+      fontSize: 18, fontWeight: 800, color: tier.color,
+      fontVariantNumeric: "tabular-nums", transition: "color 0.3s",
+      textAlign: "center", marginBottom: 4,
+    }}>
+      {(elapsed / 1000).toFixed(1)}s
+    </div>
+  );
+}
+
+export default function FlashTrainer() {
+  const [screen, setScreen] = useState("menu");
+  const [rounds, setRounds] = useState([]);
+  const [currentRound, setCurrentRound] = useState(0);
+  const [currentEntryIdx, setCurrentEntryIdx] = useState(0);
+  const [input, setInput] = useState("");
+  const [results, setResults] = useState([]);
+  const [roundResults, setRoundResults] = useState([]);
+  const [feedback, setFeedback] = useState(null);
+  const [sessionStart, setSessionStart] = useState(null);
+  const [totalTime, setTotalTime] = useState(0);
+  const [clipboardText, setClipboardText] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [entryStartTime, setEntryStartTime] = useState(null);
+  const inputRef = useRef(null);
+
+  const startGame = useCallback(() => {
+    const generated = [];
+    let prevTime = null;
+    for (let i = 0; i < 12; i++) {
+      const entries = generateRound(prevTime, i);
+      generated.push(entries);
+      prevTime = Math.max(...entries.map((e) => e.flashTime));
+    }
+    setRounds(generated);
+    setCurrentRound(0);
+    setCurrentEntryIdx(0);
+    setResults([]);
+    setRoundResults([]);
+    setFeedback(null);
+    setInput("");
+    setClipboardText("");
+    setCopied(false);
+    setSessionStart(Date.now());
+    setTotalTime(0);
+    setEntryStartTime(Date.now());
+    setScreen("play");
+  }, []);
+
+  useEffect(() => {
+    if (screen === "play" && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [screen, currentRound, currentEntryIdx, feedback]);
+
+  const currentEntries = rounds[currentRound] || [];
+  const currentEntry = currentEntries[currentEntryIdx];
+  const isLastEntryInRound = currentEntryIdx >= currentEntries.length - 1;
+  const isLastRound = currentRound >= rounds.length - 1;
+
+  const handleSubmit = () => {
+    if (!currentEntry) return;
+    const parsed = parseFullInput(input);
+    if (parsed === null) {
+      setFeedback({ type: "error", msg: "Type like: 1030mid, 820jg, 740top" });
+      return;
+    }
+    if (parsed.role !== currentEntry.role) {
+      setFeedback({ type: "error", msg: `Wrong role — this one is ${currentEntry.role}` });
+      return;
+    }
+
+    const responseTime = Date.now() - entryStartTime;
+    const isCorrect = currentEntry.acceptedAnswers.includes(parsed.time);
+
+    const result = {
+      role: currentEntry.role,
+      flashTime: currentEntry.flashTime,
+      rawAnswer: currentEntry.rawAnswer,
+      acceptedAnswers: currentEntry.acceptedAnswers,
+      typed: parsed.time,
+      correct: isCorrect,
+      responseTime,
+    };
+
+    const newRoundResults = [...roundResults, result];
+    const newResults = [...results, result];
+
+    if (isLastEntryInRound) {
+      const roundStr = newRoundResults
+        .map((r) => `${formatTime(r.typed)}${r.role}`)
+        .join(" ");
+      const newClipboard = clipboardText ? `${clipboardText} ${roundStr}` : roundStr;
+      setClipboardText(newClipboard);
+      setRoundResults([]);
+      setResults(newResults);
+      setFeedback({ type: "roundEnd", results: newRoundResults });
+      setInput("");
+
+      if (isLastRound) {
+        setTotalTime(Date.now() - sessionStart);
+        setScreen("results");
+      }
+    } else {
+      setRoundResults(newRoundResults);
+      setResults(newResults);
+      setCurrentEntryIdx(currentEntryIdx + 1);
+      setInput("");
+      setEntryStartTime(Date.now());
+      setFeedback(null);
+    }
+  };
+
+  const nextRound = () => {
+    setCurrentRound(currentRound + 1);
+    setCurrentEntryIdx(0);
+    setFeedback(null);
+    setInput("");
+    setCopied(false);
+    setEntryStartTime(Date.now());
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter") {
+      if (feedback?.type === "roundEnd") {
+        nextRound();
+      } else {
+        handleSubmit();
+      }
+    }
+  };
+
+  const accuracy = results.length > 0
+    ? Math.round((results.filter((r) => r.correct).length / results.length) * 100)
+    : 0;
+
+  const avgSpeed = results.length > 0
+    ? (results.reduce((sum, r) => sum + r.responseTime, 0) / results.length / 1000).toFixed(1)
+    : 0;
+
+  const fastCount = results.filter(r => r.responseTime <= 2000).length;
+
+  return (
+    <div style={{
+      minHeight: "100vh",
+      background: "linear-gradient(145deg, #0a0a0f 0%, #12121f 50%, #0d0d18 100%)",
+      color: "#c8cad0",
+      fontFamily: "'JetBrains Mono', 'Fira Code', 'Courier New', monospace",
+      padding: "24px 16px",
+      boxSizing: "border-box",
+    }}>
+      <div style={{ maxWidth: 620, margin: "0 auto" }}>
+        {/* Header */}
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <h1 style={{
+            fontSize: 22, fontWeight: 800, margin: 0, letterSpacing: 2,
+            background: "linear-gradient(90deg, #3498db, #9b59b6)",
+            WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+            textTransform: "uppercase",
+          }}>
+            Flash Timer Trainer
+          </h1>
+          <div style={{ fontSize: 11, opacity: 0.4, marginTop: 4, letterSpacing: 1 }}>
+            SUPPORT DIFF MACHINE
+          </div>
+        </div>
+
+        {/* Menu */}
+        {screen === "menu" && (
+          <div style={{ textAlign: "center" }}>
+            <div style={{
+              background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)",
+              borderRadius: 8, padding: "24px 20px", marginBottom: 24,
+              textAlign: "left", lineHeight: 1.7, fontSize: 13,
+            }}>
+              <div style={{ fontWeight: 700, color: "#9b59b6", marginBottom: 12, fontSize: 14 }}>
+                How it works
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                You see a game time + role where an enemy flashed.
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                Type the flash-up time <span style={{ color: "#3498db" }}>(+5:00)</span> rounded to the nearest 10s, with the role appended.
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                Example: enemy mid flashes at 5:29 → type{" "}
+                <span style={{ color: "#f1c40f" }}>1030mid</span>{" "}
+                <span style={{ opacity: 0.5 }}>(or 1020mid)</span>
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                Rounds escalate from 1 to 3 flashes. Build your clipboard string like Busio.
+              </div>
+              <div style={{ marginTop: 16, padding: "10px 12px", background: "rgba(255,255,255,0.03)", borderRadius: 6, fontSize: 12 }}>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>Speed targets</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ color: "#2ecc71" }}>● &lt;2s FAST</span>
+                  <span style={{ color: "#f1c40f" }}>● &lt;3s OK</span>
+                  <span style={{ color: "#e67e22" }}>● &lt;6s SLOW</span>
+                  <span style={{ color: "#e74c3c" }}>● 6s+ TOO SLOW</span>
+                </div>
+              </div>
+            </div>
+
+            <button onClick={startGame} style={{
+              background: "linear-gradient(135deg, #3498db, #9b59b6)", color: "#fff",
+              border: "none", borderRadius: 6, padding: "14px 48px", fontSize: 15,
+              fontWeight: 700, cursor: "pointer", fontFamily: "inherit", letterSpacing: 1,
+            }}>
+              START DRILL
+            </button>
+          </div>
+        )}
+
+        {/* Play */}
+        {screen === "play" && currentEntry && !(feedback?.type === "roundEnd") && (
+          <div>
+            <div style={{
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+              marginBottom: 20, fontSize: 12, opacity: 0.5,
+            }}>
+              <span>Round {currentRound + 1}/{rounds.length}</span>
+              <span>{results.filter((r) => r.correct).length}/{results.length} correct</span>
+            </div>
+
+            {/* Prompt */}
+            <div style={{
+              background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: 10, padding: "28px 24px", textAlign: "center", marginBottom: 20,
+            }}>
+              {currentEntries.length > 1 && (
+                <div style={{ fontSize: 11, opacity: 0.4, marginBottom: 12, letterSpacing: 1 }}>
+                  FLASH {currentEntryIdx + 1} OF {currentEntries.length} THIS ROUND
+                </div>
+              )}
+              <div style={{ fontSize: 12, opacity: 0.5, marginBottom: 8 }}>ENEMY FLASHED AT</div>
+              <div style={{ fontSize: 42, fontWeight: 800, color: "#fff", letterSpacing: 2 }}>
+                {formatTime(currentEntry.flashTime)}
+              </div>
+              <div style={{
+                display: "inline-block", marginTop: 12, padding: "4px 16px", borderRadius: 4,
+                fontSize: 16, fontWeight: 700, color: ROLE_COLORS[currentEntry.role],
+                background: `${ROLE_COLORS[currentEntry.role]}15`,
+                border: `1px solid ${ROLE_COLORS[currentEntry.role]}40`,
+                textTransform: "uppercase", letterSpacing: 2,
+              }}>
+                {currentEntry.role}
+              </div>
+
+              {/* Live timer */}
+              <div style={{ marginTop: 16 }}>
+                {entryStartTime && <LiveTimer startTime={entryStartTime} />}
+              </div>
+            </div>
+
+            {/* Input */}
+            <div style={{ position: "relative", marginBottom: 16 }}>
+              <input
+                ref={inputRef}
+                value={input}
+                onChange={(e) => { setInput(e.target.value); setFeedback(null); }}
+                onKeyDown={handleKeyDown}
+                placeholder="e.g. 1030mid"
+                autoFocus
+                style={{
+                  width: "100%", padding: "14px 16px", fontSize: 20, fontWeight: 700,
+                  fontFamily: "inherit", background: "rgba(255,255,255,0.06)",
+                  border: "2px solid rgba(255,255,255,0.12)", borderRadius: 8,
+                  color: "#fff", outline: "none", boxSizing: "border-box",
+                  textAlign: "center", letterSpacing: 2,
+                }}
+                onFocus={(e) => (e.target.style.borderColor = "rgba(155,89,182,0.5)")}
+                onBlur={(e) => (e.target.style.borderColor = "rgba(255,255,255,0.12)")}
+              />
+            </div>
+
+            {feedback && feedback.type === "error" && (
+              <div style={{ textAlign: "center", fontSize: 13, marginBottom: 12, color: "#e67e22" }}>
+                {feedback.msg}
+              </div>
+            )}
+
+            {/* Built-up entries this round */}
+            {roundResults.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
+                {roundResults.map((r, i) => <ResultBadge key={i} entry={r} />)}
+              </div>
+            )}
+
+            {clipboardText && (
+              <div style={{
+                marginTop: 16, padding: "10px 14px",
+                background: "rgba(52,152,219,0.08)", border: "1px solid rgba(52,152,219,0.2)",
+                borderRadius: 6, fontSize: 12, wordBreak: "break-all",
+              }}>
+                <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 4, letterSpacing: 1 }}>
+                  YOUR CLIPBOARD
+                </div>
+                <span style={{ color: "#3498db" }}>{clipboardText}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Round End */}
+        {screen === "play" && feedback?.type === "roundEnd" && (
+          <div>
+            <div style={{
+              background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: 10, padding: "24px 20px", textAlign: "center",
+            }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#9b59b6", marginBottom: 16, letterSpacing: 1 }}>
+                ROUND {currentRound + 1} COMPLETE
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 20 }}>
+                {feedback.results.map((r, i) => <ResultBadge key={i} entry={r} />)}
+              </div>
+
+              <div style={{
+                padding: "10px 14px", background: "rgba(52,152,219,0.08)",
+                border: "1px solid rgba(52,152,219,0.2)", borderRadius: 6,
+                fontSize: 13, marginBottom: 16, wordBreak: "break-all", textAlign: "left",
+              }}>
+                <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 4, letterSpacing: 1 }}>
+                  FULL CLIPBOARD
+                </div>
+                <span style={{ color: "#3498db" }}>{clipboardText}</span>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+                <button onClick={() => {
+                  navigator.clipboard?.writeText(clipboardText);
+                  setCopied(true);
+                }} style={{
+                  background: copied ? "rgba(46,204,113,0.15)" : "rgba(255,255,255,0.06)",
+                  color: copied ? "#2ecc71" : "#c8cad0",
+                  border: `1px solid ${copied ? "rgba(46,204,113,0.3)" : "rgba(255,255,255,0.12)"}`,
+                  borderRadius: 6, padding: "8px 20px", fontSize: 12,
+                  cursor: "pointer", fontFamily: "inherit",
+                }}>
+                  {copied ? "Copied ✓" : "Copy clipboard"}
+                </button>
+
+                {!isLastRound && (
+                  <button onClick={nextRound} style={{
+                    background: "linear-gradient(135deg, #3498db, #9b59b6)", color: "#fff",
+                    border: "none", borderRadius: 6, padding: "8px 24px", fontSize: 13,
+                    fontWeight: 700, cursor: "pointer", fontFamily: "inherit", letterSpacing: 1,
+                  }}>
+                    NEXT ROUND →
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Results */}
+        {screen === "results" && (
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#9b59b6", marginBottom: 24, letterSpacing: 1 }}>
+              DRILL COMPLETE
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 24 }}>
+              <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: "14px 8px" }}>
+                <div style={{ fontSize: 24, fontWeight: 800, color: "#2ecc71" }}>{accuracy}%</div>
+                <div style={{ fontSize: 10, opacity: 0.5 }}>ACCURACY</div>
+              </div>
+              <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: "14px 8px" }}>
+                <div style={{ fontSize: 24, fontWeight: 800, color: getSpeedTier(avgSpeed * 1000).color }}>{avgSpeed}s</div>
+                <div style={{ fontSize: 10, opacity: 0.5 }}>AVG SPEED</div>
+              </div>
+              <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: "14px 8px" }}>
+                <div style={{ fontSize: 24, fontWeight: 800, color: "#2ecc71" }}>{fastCount}</div>
+                <div style={{ fontSize: 10, opacity: 0.5 }}>FAST (&lt;2s)</div>
+              </div>
+              <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: "14px 8px" }}>
+                <div style={{ fontSize: 24, fontWeight: 800, color: "#f1c40f" }}>
+                  {Math.round(totalTime / 1000)}s
+                </div>
+                <div style={{ fontSize: 10, opacity: 0.5 }}>TOTAL</div>
+              </div>
+            </div>
+
+            {/* Full log */}
+            <div style={{
+              background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)",
+              borderRadius: 8, padding: "16px", marginBottom: 24, textAlign: "left",
+              maxHeight: 300, overflowY: "auto",
+            }}>
+              <div style={{ fontSize: 11, opacity: 0.4, marginBottom: 10, letterSpacing: 1 }}>
+                ALL RESULTS
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {results.map((r, i) => (
+                  <div key={i} style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                    fontSize: 12, padding: "5px 8px", borderRadius: 4,
+                    background: r.correct ? "rgba(46,204,113,0.05)" : "rgba(231,76,60,0.05)",
+                    borderBottom: "1px solid rgba(255,255,255,0.04)",
+                  }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ color: r.correct ? "#2ecc71" : "#e74c3c", fontWeight: 800, width: 14 }}>
+                        {r.correct ? "✓" : "✗"}
+                      </span>
+                      <span style={{ opacity: 0.4 }}>{formatTime(r.flashTime)}</span>
+                      <span style={{ color: ROLE_COLORS[r.role], fontWeight: 700 }}>{r.role}</span>
+                      <span style={{ opacity: 0.3 }}>→</span>
+                      <span style={{ color: "#fff" }}>{formatTime(r.typed)}{r.role}</span>
+                      {!r.correct && (
+                        <span style={{ fontSize: 10, opacity: 0.4 }}>
+                          ({r.acceptedAnswers.map(a => formatTime(a)).join("/")} ok)
+                        </span>
+                      )}
+                    </span>
+                    <SpeedBadge ms={r.responseTime} />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Final clipboard */}
+            <div style={{
+              padding: "12px 14px", background: "rgba(52,152,219,0.08)",
+              border: "1px solid rgba(52,152,219,0.2)", borderRadius: 6,
+              fontSize: 12, marginBottom: 20, wordBreak: "break-all", textAlign: "left",
+            }}>
+              <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 4, letterSpacing: 1 }}>
+                FINAL CLIPBOARD STRING
+              </div>
+              <span style={{ color: "#3498db" }}>{clipboardText}</span>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+              <button onClick={startGame} style={{
+                background: "linear-gradient(135deg, #3498db, #9b59b6)", color: "#fff",
+                border: "none", borderRadius: 6, padding: "14px 48px", fontSize: 15,
+                fontWeight: 700, cursor: "pointer", fontFamily: "inherit", letterSpacing: 1,
+              }}>
+                RUN IT AGAIN
+              </button>
+              <button onClick={() => setScreen("menu")} style={{
+                background: "transparent", color: "#888",
+                border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6,
+                padding: "14px 32px", fontSize: 13, cursor: "pointer", fontFamily: "inherit",
+              }}>
+                MENU
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
